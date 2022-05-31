@@ -17,11 +17,6 @@ import (
 	"github.com/influxdata/influxdb-client-go/v2/api"
 )
 
-type openstackServers interface {
-	updateServers() error
-	populateServers() error
-}
-
 type vms struct {
 	UUID      string
 	Name      string
@@ -43,71 +38,38 @@ func startup() (*gophercloud.ProviderClient, sysconfig) {
 	var config sysconfig
 	var missingEnv bool
 
-	// Check that we have the require OpenStack enviroment vars set
-	if os.Getenv("OS_AUTH_URL") == "" {
-		log.Println("No Openstack Auth URL supplied")
-		missingEnv = true
+	// Needed required Enviorment vars
+	requiredEnvVars := []string{
+		"OS_AUTH_URL",
+		"OS_USERNAME",
+		"OS_PASSWORD",
+		"OS_PROJECT_DOMAIN_ID",
+		"OS_REGION_NAME",
+		"OS_PROJECT_NAME",
+		"OS_USER_DOMAIN_NAME",
+		"OS_INTERFACE",
+		"OS_PROJECT_ID",
+		"OS_DOMAIN_NAME",
+		"OS_REGION_NAME",
+		"INFLUX_SERVER",
+		"INFLUX_TOKEN",
+		"INFLUX_BUCKET",
+		"INFLUX_ORG",
 	}
-	if os.Getenv("OS_USERNAME") == "" {
-		log.Println("No Openstack Username supplied")
-		missingEnv = true
-	}
-	if os.Getenv("OS_PASSWORD") == "" {
-		log.Println("No Openstack Password supplied")
-		missingEnv = true
-	}
-	if os.Getenv("OS_PROJECT_DOMAIN_ID") == "" {
-		log.Println("No Openstack Project Domain ID supplied")
-		missingEnv = true
-	}
-	if os.Getenv("OS_REGION_NAME") == "" {
-		log.Println("No Region Name supplied")
-		missingEnv = true
-	}
-	if os.Getenv("OS_PROJECT_NAME") == "" {
-		log.Println("No Project Name supplied")
-		missingEnv = true
-	}
-	if os.Getenv("OS_USER_DOMAIN_NAME") == "" {
-		log.Println("No User Domain Name supplied")
-		missingEnv = true
-	}
-	if os.Getenv("OS_INTERFACE") == "" {
-		log.Println("No Interface type supplied")
-		missingEnv = true
-	}
-	if os.Getenv("OS_PROJECT_ID") == "" {
-		log.Println("No Openstack Tenant Id supplied")
-		missingEnv = true
-	}
+
 	// Newer Openstack Env might not have this set, so if we have USER domain we match it
 	if os.Getenv("OS_DOMAIN_NAME") == "" || os.Getenv("OS_USER_DOMAIN_NAME") != "" {
 		os.Setenv("OS_DOMAIN_NAME", os.Getenv("OS_USER_DOMAIN_NAME"))
-	} else if os.Getenv("OS_DOMAIN_NAME") == "" {
-		log.Println("No OpenStack Domain name supplied")
-		missingEnv = true
 	}
-	if os.Getenv("OS_REGION_NAME") == "" {
-		log.Println("No OpenStack Region Name supplied")
-		missingEnv = true
+
+	// Check if the OpenStack Enviroment vars are set
+	for index := range requiredEnvVars {
+		if os.Getenv(requiredEnvVars[index]) == "" {
+			log.Printf("Missing %s Enviroment var \n", requiredEnvVars[index])
+			missingEnv = true
+		}
 	}
-	// Influx Enviromental Variables
-	if os.Getenv("INFLUX_SERVER") == "" {
-		log.Println("No Influxdb server specifed")
-		missingEnv = true
-	}
-	if os.Getenv("INFLUX_TOKEN") == "" {
-		log.Println("No Influxdb v2 Token specifed")
-		missingEnv = true
-	}
-	if os.Getenv("INFLUX_BUCKET") == "" {
-		log.Println("No Influx bucket specifed")
-		missingEnv = true
-	}
-	if os.Getenv("INFLUX_ORG") == "" {
-		log.Println("No Influx org specifed")
-		missingEnv = true
-	}
+
 	// Set the config from the Env
 	config.InfluxdbServer = os.Getenv("INFLUX_SERVER")
 	config.Token = os.Getenv("INFLUX_TOKEN")
@@ -167,7 +129,6 @@ func populateServers(provider *gophercloud.ProviderClient) ([]vms, error) {
 		s.Name = server.Name
 		s.ProjectID = server.TenantID
 		s.Status = server.Status
-
 		osServers = append(osServers, s)
 	}
 
@@ -189,10 +150,17 @@ func serverStats(provider *gophercloud.ProviderClient, serverId string) (map[str
 	return diags, nil
 }
 
-func statsWorker(config sysconfig, instances []vms, osProvider *gophercloud.ProviderClient, dbapi api.WriteAPI) {
+func statsWorker(config sysconfig, osProvider *gophercloud.ProviderClient, dbapi api.WriteAPI) {
 	ticker := time.NewTicker(time.Second * time.Duration(config.RefreshTime))
 	for range ticker.C {
+		// It's only one more api call to refresh the instances every time through
+		instances, err := populateServers(osProvider)
+		if err != nil {
+			log.Println(err)
+			log.Println("Error while populating server list")
+		}
 		for _, s := range instances {
+			// Only get stats from Active instances.
 			if s.Status == "ACTIVE" {
 				stats, err := serverStats(osProvider, s.UUID)
 				if err != nil {
@@ -217,16 +185,7 @@ func main() {
 	// Check the Enviromental Vars
 	osProvider, config := startup()
 
-	/*
-		Get the Instance list from openstack
-		In the future we will need to dynamically update this. But for now just pull the list at startup.
-	*/
-	osVms, err := populateServers(osProvider)
-	if err != nil {
-		log.Println(err)
-		log.Println("Error while populating server list")
-	}
-
+	// Setup the Database connection
 	dbclient := influxdb2.NewClient(config.InfluxdbServer, config.Token)
 	writeAPI := dbclient.WriteAPI(config.Org, config.Bucket)
 	errorsCh := writeAPI.Errors()
@@ -238,7 +197,7 @@ func main() {
 	}()
 
 	// Go into the main loop.
-	go statsWorker(config, osVms, osProvider, writeAPI)
+	go statsWorker(config, osProvider, writeAPI)
 
 	// Listen for Sigint or SigTerm and exit if you get them.
 	sigs := make(chan os.Signal, 1)
@@ -259,5 +218,4 @@ func main() {
 	writeAPI.Flush()
 	dbclient.Close()
 	fmt.Println("exiting")
-
 }
