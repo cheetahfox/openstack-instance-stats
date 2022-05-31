@@ -12,7 +12,7 @@ RUN git clone https://github.com/cheetahfox/openstack-instance-stats.git
 WORKDIR /go/src/github.com/cheetahfox/openstack-instance-stats
 RUN go build
 
-FROM alpine3:lastest
+FROM alpine:3.16
 
 COPY --from=builder /go/src/github.com/cheetahfox/openstack-instance-stats . 
 CMD ./openstack-instance-stats

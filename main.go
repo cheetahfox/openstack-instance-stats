@@ -36,9 +36,8 @@ type sysconfig struct {
 // This fucntion sets up the program func startup() *gophercloud.ProviderClient
 func startup() (*gophercloud.ProviderClient, sysconfig) {
 	var config sysconfig
-	var missingEnv bool
 
-	// Needed required Enviorment vars
+	// Required Enviorment vars
 	requiredEnvVars := []string{
 		"OS_AUTH_URL",
 		"OS_USERNAME",
@@ -62,11 +61,10 @@ func startup() (*gophercloud.ProviderClient, sysconfig) {
 		os.Setenv("OS_DOMAIN_NAME", os.Getenv("OS_USER_DOMAIN_NAME"))
 	}
 
-	// Check if the OpenStack Enviroment vars are set
+	// Check if the Required Enviromental varibles are set exit if they aren't.
 	for index := range requiredEnvVars {
 		if os.Getenv(requiredEnvVars[index]) == "" {
-			log.Printf("Missing %s Enviroment var \n", requiredEnvVars[index])
-			missingEnv = true
+			log.Fatalf("Missing %s Enviroment var \n", requiredEnvVars[index])
 		}
 	}
 
@@ -75,11 +73,6 @@ func startup() (*gophercloud.ProviderClient, sysconfig) {
 	config.Token = os.Getenv("INFLUX_TOKEN")
 	config.Bucket = os.Getenv("INFLUX_BUCKET")
 	config.Org = os.Getenv("INFLUX_ORG")
-
-	// Log and exit if we are missing vars
-	if missingEnv {
-		log.Fatal("Missing Enviromental vars")
-	}
 
 	// Lets connect to Openstack now using these values
 	opts, err := openstack.AuthOptionsFromEnv()
@@ -107,7 +100,7 @@ func populateServers(provider *gophercloud.ProviderClient) ([]vms, error) {
 		return nil, err
 	}
 
-	// Get all servers
+	// Get all servers for our current tenant
 	listOpts := servers.ListOpts{
 		AllTenants: false,
 		Name:       "",
