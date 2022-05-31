@@ -9,6 +9,7 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack"
+	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/diagnostics"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
 )
 
@@ -36,6 +37,7 @@ type sysconfig struct {
 func startup() (*gophercloud.ProviderClient, sysconfig) {
 	var config sysconfig
 	var missingEnv bool
+
 	// Check that we have the require enviroment vars set
 	if os.Getenv("OS_AUTH_URL") == "" {
 		log.Println("No Openstack Auth URL supplied")
@@ -73,7 +75,10 @@ func startup() (*gophercloud.ProviderClient, sysconfig) {
 		log.Println("No Openstack Tenant Id supplied")
 		missingEnv = true
 	}
-	if os.Getenv("OS_DOMAIN_NAME") == "" {
+	// Newer Openstack Env might not have this set, so if we have USER domain we match it
+	if os.Getenv("OS_DOMAIN_NAME") == "" || os.Getenv("OS_USER_DOMAIN_NAME") != "" {
+		os.Setenv("OS_DOMAIN_NAME", os.Getenv("OS_USER_DOMAIN_NAME"))
+	} else if os.Getenv("OS_DOMAIN_NAME") == "" {
 		log.Println("No OpenStack Domain name supplied")
 		missingEnv = true
 	}
@@ -116,7 +121,7 @@ func populateServers(provider *gophercloud.ProviderClient) ([]vms, error) {
 
 	// Get all servers
 	listOpts := servers.ListOpts{
-		AllTenants: true,
+		AllTenants: false,
 		Name:       "",
 	}
 
@@ -145,34 +150,19 @@ func populateServers(provider *gophercloud.ProviderClient) ([]vms, error) {
 	return osServers, nil
 }
 
-func extractAddress(a interface{}) {
-	switch a := a.(type) {
-	case []string:
-		for _, value := range a {
-			fmt.Println(value)
-		}
-	case []int:
-		for _, value := range a {
-			fmt.Println(value)
-		}
-	case string:
-		fmt.Printf("It's a string: %s\n", a)
-		/*
-			case []interface{}:
-				for key, value := range a {
-					switch c := a.(type) {
-					case string:
-						fmt.Printf("%q : %q\n", key, value)
-					case int:
-						fmt.Printf("%q : %q\n", key, value)
-					default:
-						fmt.Printf("dazed and confused\n")
-					}
-				}
-		*/
+func serverStats(provider *gophercloud.ProviderClient, serverId string) (map[string]interface{}, error) {
+	endpoint := gophercloud.EndpointOpts{Region: os.Getenv("OS_REGION_NAME")}
+	client, err := openstack.NewComputeV2(provider, endpoint)
+	if err != nil {
+		return nil, err
 	}
-	fmt.Println("done!")
-	spew.Dump(a)
+
+	diags, err := diagnostics.Get(client, serverId).Extract()
+	if err != nil {
+		return nil, err
+	}
+
+	return diags, nil
 }
 
 func main() {
@@ -192,6 +182,13 @@ func main() {
 		fmt.Printf("Server UUID: %s\n", s.UUID)
 		fmt.Printf("Project ID: %s\n", s.ProjectID)
 		fmt.Println(s.Active)
+		stats, err := serverStats(osProvider, s.UUID)
+		if err != nil {
+			log.Println(err)
+			fmt.Println("Error while getting Server stats")
+		}
+
+		spew.Dump(stats)
 	}
 	/*
 		opts := gophercloud.EndpointOpts{Region: os.Getenv("OS_REGION_NAME")}
