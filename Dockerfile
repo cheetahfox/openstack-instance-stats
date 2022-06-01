@@ -15,4 +15,5 @@ RUN go build
 FROM alpine:3.16
 
 COPY --from=builder /go/src/github.com/cheetahfox/openstack-instance-stats . 
+EXPOSE 3210
 CMD ./openstack-instance-stats

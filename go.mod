@@ -4,6 +4,7 @@ go 1.17
 
 require (
 	github.com/gophercloud/gophercloud v0.24.0
+	github.com/gorilla/mux v1.8.0
 	github.com/influxdata/influxdb-client-go/v2 v2.9.0
 )
 

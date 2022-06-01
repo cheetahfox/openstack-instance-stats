@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openstack-instance-stats
+spec:
+  selector:
+    matchLabels:
+      app: openstack-instance-stats
+  minReadySeconds: 10
+  template:
+    metadata:
+      labels:
+        app: openstack-instance-stats
+    spec:
+      containers:
+      - name: openstack-instance-stats
+        image: cheetahfox/openstack-instance-stats:0.2
+        ports:
+        - containerPort: 3210
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 3210
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 3210
+        resources:
+          limits:
+            cpu: 10m
+            memory: 30Mi
+          requests:
+            cpu: 10m
+            memory: 30Mi
+      terminationGracePeriodSeconds: 30 

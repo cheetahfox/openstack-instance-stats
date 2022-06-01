@@ -1,14 +1,17 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/cheetahfox/openstack-instance-stats/handlers"
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/diagnostics"
@@ -31,6 +34,7 @@ type sysconfig struct {
 	Org            string
 	Token          string
 	RefreshTime    int
+	WebPort        string
 }
 
 // This fucntion sets up the program func startup() *gophercloud.ProviderClient
@@ -54,6 +58,7 @@ func startup() (*gophercloud.ProviderClient, sysconfig) {
 		"INFLUX_TOKEN",
 		"INFLUX_BUCKET",
 		"INFLUX_ORG",
+		"STATS_PORT",
 	}
 
 	// Newer Openstack Env might not have this set, so if we have USER domain we match it
@@ -69,6 +74,7 @@ func startup() (*gophercloud.ProviderClient, sysconfig) {
 	}
 
 	// Set the config from the Env
+	config.WebPort = os.Getenv("STATS_PORT")
 	config.InfluxdbServer = os.Getenv("INFLUX_SERVER")
 	config.Token = os.Getenv("INFLUX_TOKEN")
 	config.Bucket = os.Getenv("INFLUX_BUCKET")
@@ -189,6 +195,17 @@ func main() {
 		}
 	}()
 
+	r := handlers.Router(dbclient)
+
+	srv := &http.Server{
+		Addr:    ":" + config.WebPort,
+		Handler: r,
+	}
+
+	go func() {
+		srv.ListenAndServe()
+	}()
+
 	// Go into the main loop.
 	go statsWorker(config, osProvider, writeAPI)
 
@@ -206,9 +223,12 @@ func main() {
 	}()
 
 	fmt.Println("Startup success")
+
 	<-done
 	// Close the Influxdb connection
 	writeAPI.Flush()
 	dbclient.Close()
+	// Shudown the webserver
+	srv.Shutdown(context.Background())
 	fmt.Println("exiting")
 }
