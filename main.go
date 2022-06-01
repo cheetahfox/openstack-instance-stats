@@ -187,13 +187,15 @@ func main() {
 	// Setup the Database connection
 	dbclient := influxdb2.NewClient(config.InfluxdbServer, config.Token)
 	writeAPI := dbclient.WriteAPI(config.Org, config.Bucket)
-	errorsCh := writeAPI.Errors()
-	// Catch any write errors
-	go func() {
-		for err := range errorsCh {
-			fmt.Printf("write error: %s\n", err.Error())
-		}
-	}()
+	/*
+		errorsCh := writeAPI.Errors()
+		// Catch any write errors
+		//go func() {
+			for err := range errorsCh {
+				fmt.Printf("write error: %s\n", err.Error())
+			}
+		}()
+	*/
 
 	r := handlers.Router(dbclient)
 
