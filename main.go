@@ -135,6 +135,7 @@ func populateServers(provider *gophercloud.ProviderClient) ([]vms, error) {
 	return osServers, nil
 }
 
+//
 func serverStats(provider *gophercloud.ProviderClient, serverId string) (map[string]interface{}, error) {
 	endpoint := gophercloud.EndpointOpts{Region: os.Getenv("OS_REGION_NAME")}
 	client, err := openstack.NewComputeV2(provider, endpoint)
@@ -150,6 +151,11 @@ func serverStats(provider *gophercloud.ProviderClient, serverId string) (map[str
 	return diags, nil
 }
 
+/*
+statsWorker is the main data collection loop.
+We get a list of current vms running and then call nova diags API to get detailed
+stats about each vm.
+*/
 func statsWorker(config sysconfig, osProvider *gophercloud.ProviderClient, dbapi api.WriteAPI) {
 	ticker := time.NewTicker(time.Second * time.Duration(config.RefreshTime))
 	for range ticker.C {

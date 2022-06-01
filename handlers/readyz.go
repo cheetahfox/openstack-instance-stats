@@ -12,9 +12,9 @@ import (
 // Ready Check where we look at the
 func readyz(isReady *atomic.Value, dbclient influxdb2.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
-		// Check database Status. If Unhealthy
+		// Check database Status. If unhealthy return a http error status
 		health, err := dbclient.Health(context.Background())
-		if (err != nil) && health.Status == domain.HealthCheckStatusPass {
+		if (err != nil) || health.Status != domain.HealthCheckStatusPass {
 			http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
 			return
 		}
