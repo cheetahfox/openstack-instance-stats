@@ -185,18 +185,12 @@ func main() {
 	// Check the Enviromental Vars
 	osProvider, config := startup()
 
-	fmt.Println(config.InfluxdbServer)
-	fmt.Println(config.Token)
-	fmt.Println(config.Org)
-	fmt.Println(config.Bucket)
-
 	// Setup the Database connection
 	dbclient := influxdb2.NewClient(config.InfluxdbServer, config.Token)
 	health, err := dbclient.Health(context.Background())
 	if (err != nil) && health.Status == domain.HealthCheckStatusPass {
 		log.Panic(err)
 	}
-	fmt.Println(health)
 	writeAPI := dbclient.WriteAPI(config.Org, config.Bucket)
 	errorsCh := writeAPI.Errors()
 	// Catch any write errors
@@ -233,7 +227,7 @@ func main() {
 		done <- true
 	}()
 
-	fmt.Println("Startup success v0.5")
+	fmt.Println("Startup success v0.6")
 
 	<-done
 	// Close the Influxdb connection
