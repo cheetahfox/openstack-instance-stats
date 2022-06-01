@@ -18,6 +18,7 @@ import (
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
 	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
 	"github.com/influxdata/influxdb-client-go/v2/api"
+	"github.com/influxdata/influxdb-client-go/v2/domain"
 )
 
 type vms struct {
@@ -191,6 +192,11 @@ func main() {
 
 	// Setup the Database connection
 	dbclient := influxdb2.NewClient(config.InfluxdbServer, config.Token)
+	health, err := dbclient.Health(context.Background())
+	if (err != nil) && health.Status == domain.HealthCheckStatusPass {
+		log.Panic(err)
+	}
+	fmt.Println(health)
 	writeAPI := dbclient.WriteAPI(config.Org, config.Bucket)
 	errorsCh := writeAPI.Errors()
 	// Catch any write errors
@@ -227,7 +233,7 @@ func main() {
 		done <- true
 	}()
 
-	fmt.Println("Startup success")
+	fmt.Println("Startup success v0.5")
 
 	<-done
 	// Close the Influxdb connection
