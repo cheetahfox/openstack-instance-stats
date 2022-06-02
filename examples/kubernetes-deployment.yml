@@ -1,5 +1,5 @@
 apiVersion: v1
-kind: Secret
+kind: Configmap
 metadata:
   name: config-instance-stats
 type: Opaque
@@ -13,12 +13,31 @@ data:
   OS_USER_DOMAIN_NAME: Default
   OS_PROJECT_NAME: project-name
   OS_PASSWORD: password
-  OS_IDENTITY_API_VERSION: 3
-  INFLUX_TOKEN: ""
+  OS_IDENTITY_API_VERSION: "3"
+  INFLUX_TOKEN: "influx-token"
   INFLUX_SERVER: "http://influxd.server.com:8086/"
-  INFLUX_BUCKET: ""
-  INFLUX_ORG: ""
-  STATS_PORT: 3210
+  INFLUX_BUCKET: "yourBucket"
+  INFLUX_ORG: "yourOrg"
+  STATS_PORT: "3210"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openstack-instance-stats
+  annotations:
+    metallb.universe.tf/address-pool: default
+  labels:
+    app: openstack-instance-stats
+spec:
+  ports:
+  - port: 80
+    targetPort: 3210
+    protocol: TCP
+    name: http
+  selector:
+    app: openstack-instance-stats
+  sessionAffinity: None
+  type: LoadBalancer
 ---
 apiVersion: apps/v1
 kind: Deployment

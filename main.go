@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -81,13 +82,9 @@ func startup() (*gophercloud.ProviderClient, sysconfig) {
 	config.Bucket = os.Getenv("INFLUX_BUCKET")
 	config.Org = os.Getenv("INFLUX_ORG")
 
-	// Lets connect to Openstack now using these values
-	opts, err := openstack.AuthOptionsFromEnv()
+	provider, err := osAuth()
 	if err != nil {
-		log.Fatal(err)
-	}
-	provider, err := openstack.AuthenticatedClient(opts)
-	if err != nil {
+		fmt.Println("Error while Authenticating with OpenStack for the first time.")
 		log.Fatal(err)
 	}
 
@@ -135,7 +132,9 @@ func populateServers(provider *gophercloud.ProviderClient) ([]vms, error) {
 	return osServers, nil
 }
 
-//
+/*
+Get the Nova API Diagnostics for a specific Instance ID
+*/
 func serverStats(provider *gophercloud.ProviderClient, serverId string) (map[string]interface{}, error) {
 	endpoint := gophercloud.EndpointOpts{Region: os.Getenv("OS_REGION_NAME")}
 	client, err := openstack.NewComputeV2(provider, endpoint)
@@ -149,6 +148,30 @@ func serverStats(provider *gophercloud.ProviderClient, serverId string) (map[str
 	}
 
 	return diags, nil
+}
+
+/*
+Authenticate using the Enviromental vars
+*/
+func osAuth() (*gophercloud.ProviderClient, error) {
+	// Lets connect to Openstack now using these values
+	opts, err := openstack.AuthOptionsFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
+	// This is super important, because the token will expire.
+	opts.AllowReauth = true
+
+	provider, err := openstack.AuthenticatedClient(opts)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	r := provider.GetAuthResult()
+	if r == nil {
+		return nil, errors.New("No valid auth result")
+	}
+	return provider, err
 }
 
 /*
