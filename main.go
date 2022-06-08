@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"reflect"
+	"regexp"
 	"syscall"
 	"time"
 
@@ -152,6 +154,7 @@ func serverStats(provider *gophercloud.ProviderClient, serverId string) (map[str
 
 /*
 Authenticate using the Enviromental vars
+Return ProviderClient and err
 */
 func osAuth() (*gophercloud.ProviderClient, error) {
 	// Lets connect to Openstack now using these values
@@ -169,7 +172,7 @@ func osAuth() (*gophercloud.ProviderClient, error) {
 
 	r := provider.GetAuthResult()
 	if r == nil {
-		return nil, errors.New("No valid auth result")
+		return nil, errors.New("no valid auth result")
 	}
 	return provider, err
 }
@@ -180,6 +183,9 @@ We get a list of current vms running and then call nova diags API to get detaile
 stats about each vm.
 */
 func statsWorker(config sysconfig, osProvider *gophercloud.ProviderClient, dbapi api.WriteAPI) {
+	// use this to match on CPU keys
+	re, _ := regexp.Compile("cpu[0-9]+_time$")
+
 	ticker := time.NewTicker(time.Second * time.Duration(config.RefreshTime))
 	for range ticker.C {
 		// It's only one more api call to refresh the instances every time through
@@ -189,6 +195,7 @@ func statsWorker(config sysconfig, osProvider *gophercloud.ProviderClient, dbapi
 			log.Println("Error while populating server list")
 		}
 		for _, s := range instances {
+			var cpu_total float64
 			// Only get stats from Active instances.
 			if s.Status == "ACTIVE" {
 				stats, err := serverStats(osProvider, s.UUID)
@@ -196,6 +203,7 @@ func statsWorker(config sysconfig, osProvider *gophercloud.ProviderClient, dbapi
 					log.Println(err)
 					fmt.Println("Error while getting Server stats")
 				}
+				// Loop through the stats and write a point for each metric
 				for k, v := range stats {
 					p := influxdb2.NewPointWithMeasurement("OpenStack Metrics").
 						AddTag("Instance Name", s.Name).
@@ -204,10 +212,36 @@ func statsWorker(config sysconfig, osProvider *gophercloud.ProviderClient, dbapi
 						AddField(k, v).
 						SetTime(time.Now())
 					dbapi.WritePoint(p)
+					// count up cpu mills for each cpu core
+					if re.MatchString(k) {
+						cpu_value, err := getFloat(v)
+						if err == nil {
+							cpu_total = cpu_total + cpu_value
+						}
+					}
 				}
+				// write the accumulated cpu total
+				p := influxdb2.NewPointWithMeasurement("OpenStack Metrics").
+					AddTag("Instance Name", s.Name).
+					AddTag("UUID", s.UUID).
+					AddTag("Project", s.ProjectID).
+					AddField("cpu_total", cpu_total).
+					SetTime(time.Now())
+				dbapi.WritePoint(p)
 			}
 		}
 	}
+}
+
+func getFloat(unk interface{}) (float64, error) {
+	var floatType = reflect.TypeOf(float64(0))
+	v := reflect.ValueOf(unk)
+	v = reflect.Indirect(v)
+	if !v.Type().ConvertibleTo(floatType) {
+		return 0, fmt.Errorf("cannot convert %v to float64", v.Type())
+	}
+	fv := v.Convert(floatType)
+	return fv.Float(), nil
 }
 
 func main() {
@@ -256,7 +290,7 @@ func main() {
 		done <- true
 	}()
 
-	fmt.Println("Startup success v0.6")
+	fmt.Println("Startup success v0.9")
 
 	<-done
 	// Close the Influxdb connection
