@@ -303,7 +303,7 @@ func ioStats(server vms, stats map[string]interface{}, dbapi api.WriteAPI) error
 	writePoint(server, "OpenStack disk", "hd_read_ops", hdr_total, dbapi)
 	writePoint(server, "OpenStack disk", "hd_write_ops", hdw_total, dbapi)
 	writePoint(server, "OpenStack disk", "total_read_ops", ior, dbapi)
-	writePoint(server, "OpenStack disk", "total_read_ops", iow, dbapi)
+	writePoint(server, "OpenStack disk", "total_write_ops", iow, dbapi)
 
 	return nil
 }
