@@ -19,6 +19,7 @@ data:
   INFLUX_BUCKET: "yourBucket"
   INFLUX_ORG: "yourOrg"
   STATS_PORT: "3210"
+  SCOPE: "project"
 ---
 apiVersion: v1
 kind: Service

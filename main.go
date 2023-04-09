@@ -39,13 +39,14 @@ type sysconfig struct {
 	Token          string
 	RefreshTime    int
 	WebPort        string
+	Scope          string
 }
 
 // This fucntion sets up the program func startup() *gophercloud.ProviderClient
 func startup() (*gophercloud.ProviderClient, sysconfig) {
 	var config sysconfig
 
-	// Required Enviorment vars
+	// Required Enviorment vars mostly OpenStack Env vars.
 	requiredEnvVars := []string{
 		"OS_AUTH_URL",
 		"OS_USERNAME",
@@ -58,11 +59,12 @@ func startup() (*gophercloud.ProviderClient, sysconfig) {
 		"OS_PROJECT_ID",
 		"OS_DOMAIN_NAME",
 		"OS_REGION_NAME",
-		"INFLUX_SERVER",
-		"INFLUX_TOKEN",
-		"INFLUX_BUCKET",
-		"INFLUX_ORG",
-		"STATS_PORT",
+		"INFLUX_SERVER", // Influxdb server url including port number
+		"INFLUX_TOKEN",  // Influx Token
+		"INFLUX_BUCKET", // Influx bucket
+		"INFLUX_ORG",    // Influx ord
+		"STATS_PORT",    // port number for the kubernetes checks
+		"SCOPE",         // "site" or "project"; get stats on ALL instances or just a single project
 	}
 
 	// Newer Openstack Env might not have this set, so if we have USER domain we match it
@@ -83,6 +85,7 @@ func startup() (*gophercloud.ProviderClient, sysconfig) {
 	config.Token = os.Getenv("INFLUX_TOKEN")
 	config.Bucket = os.Getenv("INFLUX_BUCKET")
 	config.Org = os.Getenv("INFLUX_ORG")
+	config.Scope = os.Getenv("SCOPE")
 
 	provider, err := osAuth()
 	if err != nil {
@@ -97,7 +100,7 @@ func startup() (*gophercloud.ProviderClient, sysconfig) {
 }
 
 // Fill the server list for the first time
-func populateServers(provider *gophercloud.ProviderClient) ([]vms, error) {
+func populateServers(provider *gophercloud.ProviderClient, config sysconfig) ([]vms, error) {
 	var osServers []vms
 
 	endpoint := gophercloud.EndpointOpts{Region: os.Getenv("OS_REGION_NAME")}
@@ -106,10 +109,13 @@ func populateServers(provider *gophercloud.ProviderClient) ([]vms, error) {
 		return nil, err
 	}
 
-	// Get all servers for our current tenant
 	listOpts := servers.ListOpts{
 		AllTenants: false,
 		Name:       "",
+	}
+	// If we are doing a site wide scan
+	if config.Scope == "site" {
+		listOpts.AllTenants = true
 	}
 
 	allPages, err := servers.List(client, listOpts).AllPages()
@@ -131,6 +137,10 @@ func populateServers(provider *gophercloud.ProviderClient) ([]vms, error) {
 		osServers = append(osServers, s)
 	}
 
+	/*
+		found := fmt.Sprintf("Found %d OpenStack instances", len(osServers))
+		fmt.Println(found)
+	*/
 	return osServers, nil
 }
 
@@ -183,19 +193,15 @@ We get a list of current vms running and then call nova diags API to get detaile
 stats about each vm.
 */
 func statsWorker(config sysconfig, osProvider *gophercloud.ProviderClient, dbapi api.WriteAPI) {
-	// use this to match on CPU keys
-	re, _ := regexp.Compile("cpu[0-9]+_time$")
-
 	ticker := time.NewTicker(time.Second * time.Duration(config.RefreshTime))
 	for range ticker.C {
 		// It's only one more api call to refresh the instances every time through
-		instances, err := populateServers(osProvider)
+		instances, err := populateServers(osProvider, config)
 		if err != nil {
 			log.Println(err)
 			log.Println("Error while populating server list")
 		}
 		for _, s := range instances {
-			var cpu_total float64
 			// Only get stats from Active instances.
 			if s.Status == "ACTIVE" {
 				stats, err := serverStats(osProvider, s.UUID)
@@ -205,32 +211,114 @@ func statsWorker(config sysconfig, osProvider *gophercloud.ProviderClient, dbapi
 				}
 				// Loop through the stats and write a point for each metric
 				for k, v := range stats {
-					p := influxdb2.NewPointWithMeasurement("OpenStack Metrics").
-						AddTag("Instance Name", s.Name).
-						AddTag("UUID", s.UUID).
-						AddTag("Project", s.ProjectID).
-						AddField(k, v).
-						SetTime(time.Now())
-					dbapi.WritePoint(p)
-					// count up cpu mills for each cpu core
-					if re.MatchString(k) {
-						cpu_value, err := getFloat(v)
-						if err == nil {
-							cpu_total = cpu_total + cpu_value
-						}
+					val, err := getFloat(v)
+					if err == nil {
+						writePoint(s, "OpenStack Metrics", k, val, dbapi)
 					}
 				}
-				// write the accumulated cpu total
-				p := influxdb2.NewPointWithMeasurement("OpenStack Metrics").
-					AddTag("Instance Name", s.Name).
-					AddTag("UUID", s.UUID).
-					AddTag("Project", s.ProjectID).
-					AddField("cpu_total", cpu_total).
-					SetTime(time.Now())
-				dbapi.WritePoint(p)
+
+				// Generated metrics
+				err = cpuTotals(s, stats, dbapi)
+				if err != nil {
+					log.Println(err)
+				}
+				err = ioStats(s, stats, dbapi)
+				if err != nil {
+					log.Println(err)
+				}
 			}
 		}
 	}
+}
+
+// Sum up the CPU totals and write it out... Using legacy metric name. (I was dumb)
+func cpuTotals(server vms, stats map[string]interface{}, dbapi api.WriteAPI) error {
+	// use this to match on CPU keys
+	re, _ := regexp.Compile("cpu[0-9]+_time$")
+	var cpu_total float64
+
+	for k, v := range stats {
+		if re.MatchString(k) {
+			cpu_value, err := getFloat(v)
+			if err != nil {
+				return err
+			}
+			cpu_total = cpu_total + cpu_value
+		}
+	}
+
+	writePoint(server, "OpenStack Metrics", "cpu_total", cpu_total, dbapi)
+	return nil
+}
+
+// Function to accumulate various disk IO statistics on a instance VM
+func ioStats(server vms, stats map[string]interface{}, dbapi api.WriteAPI) error {
+	// vdX device io requests and
+	vdr, _ := regexp.Compile("vd.+read_req$")
+	vdw, _ := regexp.Compile("vd.+write_req$")
+	hdr, _ := regexp.Compile("hd.+read_req$")
+	hdw, _ := regexp.Compile("hd.+write_req$")
+	var vdr_total, vdw_total, hdr_total, hdw_total, ior, iow float64
+
+	for k, v := range stats {
+		// Get vd* read/write ops
+		if vdr.MatchString(k) {
+			vdr_value, err := getFloat(v)
+			if err != nil {
+				return err
+			}
+			vdr_total = vdr_total + vdr_value
+		}
+		if vdw.MatchString(k) {
+			vdw_value, err := getFloat(v)
+			if err != nil {
+				return err
+			}
+			vdw_total = vdw_total + vdw_value
+		}
+
+		// Get legacy hd* read/write ops
+		if hdr.MatchString(k) {
+			hdr_value, err := getFloat(v)
+			if err != nil {
+				return err
+			}
+			hdr_total = hdr_total + hdr_value
+		}
+		if hdw.MatchString(k) {
+			hdw_value, err := getFloat(v)
+			if err != nil {
+				return err
+			}
+			hdw_total = hdw_total + hdw_value
+		}
+	}
+
+	// Sum everything up!
+	ior = vdr_total + hdr_total
+	iow = vdw_total + hdw_total
+
+	writePoint(server, "OpenStack disk", "vd_read_ops", vdr_total, dbapi)
+	writePoint(server, "OpenStack disk", "vd_write_ops", vdw_total, dbapi)
+	writePoint(server, "OpenStack disk", "hd_read_ops", hdr_total, dbapi)
+	writePoint(server, "OpenStack disk", "hd_write_ops", hdw_total, dbapi)
+	writePoint(server, "OpenStack disk", "total_read_ops", ior, dbapi)
+	writePoint(server, "OpenStack disk", "total_read_ops", iow, dbapi)
+
+	return nil
+}
+
+// This writes a point that we have computed from the normal statistics
+func writePoint(s vms, m string, f string, v float64, dbapi api.WriteAPI) {
+	t := time.Now()
+	p := influxdb2.NewPointWithMeasurement(m).
+		AddTag("Instance Name", s.Name).
+		AddTag("UUID", s.UUID).
+		AddTag("Project", s.ProjectID).
+		AddField(f, v).
+		SetTime(t)
+	dbapi.WritePoint(p)
+	// fmt.Println("Wrote Data for "+f+" : %f : at", v, t.String())
 }
 
 func getFloat(unk interface{}) (float64, error) {
@@ -290,7 +378,7 @@ func main() {
 		done <- true
 	}()
 
-	fmt.Println("Startup success v0.9")
+	fmt.Println("Startup success v0.95")
 
 	<-done
 	// Close the Influxdb connection
