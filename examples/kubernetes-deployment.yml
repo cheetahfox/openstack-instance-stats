@@ -1,8 +1,7 @@
 apiVersion: v1
-kind: Configmap
+kind: ConfigMap
 metadata:
   name: config-instance-stats
-type: Opaque
 data:
   OS_REGION_NAME: RegionOne
   OS_PROJECT_DOMAIN_ID: default
@@ -58,7 +57,7 @@ spec:
       - name: openstack-instance-stats
         image: cheetahfox/openstack-instance-stats:0.2
         envFrom:
-        - secretRef:
+        - configMapRef:
           name: config-instance-stats
         ports:
         - containerPort: 3210
