@@ -218,7 +218,7 @@ func statsWorker(config sysconfig, osProvider *gophercloud.ProviderClient, dbapi
 				}
 
 				// Generated metrics
-				err = cpuTotals(s, stats, dbapi)
+				err = cpuStats(s, stats, dbapi)
 				if err != nil {
 					log.Println(err)
 				}
@@ -232,7 +232,7 @@ func statsWorker(config sysconfig, osProvider *gophercloud.ProviderClient, dbapi
 }
 
 // Sum up the CPU totals and write it out... Using legacy metric name. (I was dumb)
-func cpuTotals(server vms, stats map[string]interface{}, dbapi api.WriteAPI) error {
+func cpuStats(server vms, stats map[string]interface{}, dbapi api.WriteAPI) error {
 	// use this to match on CPU keys
 	re, _ := regexp.Compile("cpu[0-9]+_time$")
 	var cpu_total float64
