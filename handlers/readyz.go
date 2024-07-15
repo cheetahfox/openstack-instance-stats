@@ -22,5 +22,6 @@ func readyz(isReady *atomic.Value, dbclient influxdb2.Client) http.HandlerFunc {
 			http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
 			return
 		}
+		http.Error(w, http.StatusText(http.StatusOK), http.StatusOK)
 	}
 }

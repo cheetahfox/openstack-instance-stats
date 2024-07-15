@@ -2,10 +2,8 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,7 +12,10 @@ import (
 	"syscall"
 	"time"
 
+	influx "github.com/cheetahfox/openstack-instance-stats/influx"
 	"github.com/cheetahfox/openstack-instance-stats/handlers"
+	config "github.com/cheetahfox/openstack-instance-stats/config"
+	"github.com/cheetahfox/openstack-instance-stats/metrics"
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/diagnostics"
@@ -24,84 +25,9 @@ import (
 	"github.com/influxdata/influxdb-client-go/v2/domain"
 )
 
-type vms struct {
-	UUID      string
-	Name      string
-	ProjectID string
-	IP        net.IP
-	Status    string
-}
-
-type sysconfig struct {
-	Bucket         string
-	InfluxdbServer string
-	Org            string
-	Token          string
-	RefreshTime    int
-	WebPort        string
-	Scope          string
-}
-
-// This fucntion sets up the program func startup() *gophercloud.ProviderClient
-func startup() (*gophercloud.ProviderClient, sysconfig) {
-	var config sysconfig
-
-	// Required Enviorment vars mostly OpenStack Env vars.
-	requiredEnvVars := []string{
-		"OS_AUTH_URL",
-		"OS_USERNAME",
-		"OS_PASSWORD",
-		"OS_PROJECT_DOMAIN_ID",
-		"OS_REGION_NAME",
-		"OS_PROJECT_NAME",
-		"OS_USER_DOMAIN_NAME",
-		"OS_INTERFACE",
-		"OS_PROJECT_ID",
-		"OS_DOMAIN_NAME",
-		"OS_REGION_NAME",
-		"INFLUX_SERVER", // Influxdb server url including port number
-		"INFLUX_TOKEN",  // Influx Token
-		"INFLUX_BUCKET", // Influx bucket
-		"INFLUX_ORG",    // Influx ord
-		"STATS_PORT",    // port number for the kubernetes checks
-		"SCOPE",         // "site" or "project"; get stats on ALL instances or just a single project
-	}
-
-	// Newer Openstack Env might not have this set, so if we have USER domain we match it
-	if os.Getenv("OS_DOMAIN_NAME") == "" || os.Getenv("OS_USER_DOMAIN_NAME") != "" {
-		os.Setenv("OS_DOMAIN_NAME", os.Getenv("OS_USER_DOMAIN_NAME"))
-	}
-
-	// Check if the Required Enviromental varibles are set exit if they aren't.
-	for index := range requiredEnvVars {
-		if os.Getenv(requiredEnvVars[index]) == "" {
-			log.Fatalf("Missing %s Enviroment var \n", requiredEnvVars[index])
-		}
-	}
-
-	// Set the config from the Env
-	config.WebPort = os.Getenv("STATS_PORT")
-	config.InfluxdbServer = os.Getenv("INFLUX_SERVER")
-	config.Token = os.Getenv("INFLUX_TOKEN")
-	config.Bucket = os.Getenv("INFLUX_BUCKET")
-	config.Org = os.Getenv("INFLUX_ORG")
-	config.Scope = os.Getenv("SCOPE")
-
-	provider, err := osAuth()
-	if err != nil {
-		fmt.Println("Error while Authenticating with OpenStack for the first time.")
-		log.Fatal(err)
-	}
-
-	// Just set the refresh time to 15 seconds for now.
-	config.RefreshTime = 15
-
-	return provider, config
-}
-
 // Fill the server list for the first time
-func populateServers(provider *gophercloud.ProviderClient, config sysconfig) ([]vms, error) {
-	var osServers []vms
+func populateServers(provider *gophercloud.ProviderClient, conf config.Sysconfig) ([]metrics.Vms, error) {
+	var osServers []metrics.Vms
 
 	endpoint := gophercloud.EndpointOpts{Region: os.Getenv("OS_REGION_NAME")}
 	client, err := openstack.NewComputeV2(provider, endpoint)
@@ -114,7 +40,7 @@ func populateServers(provider *gophercloud.ProviderClient, config sysconfig) ([]
 		Name:       "",
 	}
 	// If we are doing a site wide scan
-	if config.Scope == "site" {
+	if conf.Scope == "site" {
 		listOpts.AllTenants = true
 	}
 
@@ -127,7 +53,7 @@ func populateServers(provider *gophercloud.ProviderClient, config sysconfig) ([]
 		return nil, err
 	}
 
-	var s vms
+	var s metrics.Vms
 
 	for _, server := range allServers {
 		s.UUID = server.ID
@@ -163,40 +89,15 @@ func serverStats(provider *gophercloud.ProviderClient, serverId string) (map[str
 }
 
 /*
-Authenticate using the Enviromental vars
-Return ProviderClient and err
-*/
-func osAuth() (*gophercloud.ProviderClient, error) {
-	// Lets connect to Openstack now using these values
-	opts, err := openstack.AuthOptionsFromEnv()
-	if err != nil {
-		log.Fatal(err)
-	}
-	// This is super important, because the token will expire.
-	opts.AllowReauth = true
-
-	provider, err := openstack.AuthenticatedClient(opts)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	r := provider.GetAuthResult()
-	if r == nil {
-		return nil, errors.New("no valid auth result")
-	}
-	return provider, err
-}
-
-/*
 statsWorker is the main data collection loop.
-We get a list of current vms running and then call nova diags API to get detailed
+We get a list of current Vms running and then call nova diags API to get detailed
 stats about each vm.
 */
-func statsWorker(config sysconfig, osProvider *gophercloud.ProviderClient, dbapi api.WriteAPI) {
-	ticker := time.NewTicker(time.Second * time.Duration(config.RefreshTime))
+func statsWorker(conf config.Sysconfig, osProvider *gophercloud.ProviderClient, dbapi api.WriteAPI) {
+	ticker := time.NewTicker(time.Second * time.Duration(conf.RefreshTime))
 	for range ticker.C {
 		// It's only one more api call to refresh the instances every time through
-		instances, err := populateServers(osProvider, config)
+		instances, err := populateServers(osProvider, conf)
 		if err != nil {
 			log.Println(err)
 			log.Println("Error while populating server list")
@@ -213,7 +114,7 @@ func statsWorker(config sysconfig, osProvider *gophercloud.ProviderClient, dbapi
 				for k, v := range stats {
 					val, err := getFloat(v)
 					if err == nil {
-						writePoint(s, "OpenStack Metrics", k, val, dbapi)
+						influx.WritePoint(s, "OpenStack Metrics", k, val, dbapi)
 					}
 				}
 
@@ -232,7 +133,7 @@ func statsWorker(config sysconfig, osProvider *gophercloud.ProviderClient, dbapi
 }
 
 // Sum up the CPU totals and write it out... Using legacy metric name. (I was dumb)
-func cpuStats(server vms, stats map[string]interface{}, dbapi api.WriteAPI) error {
+func cpuStats(server metrics.Vms, stats map[string]interface{}, dbapi api.WriteAPI) error {
 	// use this to match on CPU keys
 	re, _ := regexp.Compile("cpu[0-9]+_time$")
 	var cpu_total float64
@@ -247,12 +148,12 @@ func cpuStats(server vms, stats map[string]interface{}, dbapi api.WriteAPI) erro
 		}
 	}
 
-	writePoint(server, "OpenStack Metrics", "cpu_total", cpu_total, dbapi)
+	influx.WritePoint(server, "OpenStack Metrics", "cpu_total", cpu_total, dbapi)
 	return nil
 }
 
 // Function to accumulate various disk IO statistics on a instance VM
-func ioStats(server vms, stats map[string]interface{}, dbapi api.WriteAPI) error {
+func ioStats(server metrics.Vms, stats map[string]interface{}, dbapi api.WriteAPI) error {
 	// vdX device io requests and
 	vdr, _ := regexp.Compile("vd.+read_req$")
 	vdw, _ := regexp.Compile("vd.+write_req$")
@@ -298,28 +199,17 @@ func ioStats(server vms, stats map[string]interface{}, dbapi api.WriteAPI) error
 	ior = vdr_total + hdr_total
 	iow = vdw_total + hdw_total
 
-	writePoint(server, "OpenStack disk", "vd_read_ops", vdr_total, dbapi)
-	writePoint(server, "OpenStack disk", "vd_write_ops", vdw_total, dbapi)
-	writePoint(server, "OpenStack disk", "hd_read_ops", hdr_total, dbapi)
-	writePoint(server, "OpenStack disk", "hd_write_ops", hdw_total, dbapi)
-	writePoint(server, "OpenStack disk", "total_read_ops", ior, dbapi)
-	writePoint(server, "OpenStack disk", "total_write_ops", iow, dbapi)
+	influx.WritePoint(server, "OpenStack disk", "vd_read_ops", vdr_total, dbapi)
+	influx.WritePoint(server, "OpenStack disk", "vd_write_ops", vdw_total, dbapi)
+	influx.WritePoint(server, "OpenStack disk", "hd_read_ops", hdr_total, dbapi)
+	influx.WritePoint(server, "OpenStack disk", "hd_write_ops", hdw_total, dbapi)
+	influx.WritePoint(server, "OpenStack disk", "total_read_ops", ior, dbapi)
+	influx.WritePoint(server, "OpenStack disk", "total_write_ops", iow, dbapi)
 
 	return nil
 }
 
-// This writes a point that we have computed from the normal statistics
-func writePoint(s vms, m string, f string, v float64, dbapi api.WriteAPI) {
-	t := time.Now()
-	p := influxdb2.NewPointWithMeasurement(m).
-		AddTag("Instance Name", s.Name).
-		AddTag("UUID", s.UUID).
-		AddTag("Project", s.ProjectID).
-		AddField(f, v).
-		SetTime(t)
-	dbapi.WritePoint(p)
-	// fmt.Println("Wrote Data for "+f+" : %f : at", v, t.String())
-}
+
 
 func getFloat(unk interface{}) (float64, error) {
 	var floatType = reflect.TypeOf(float64(0))
@@ -334,15 +224,15 @@ func getFloat(unk interface{}) (float64, error) {
 
 func main() {
 	// Check the Enviromental Vars
-	osProvider, config := startup()
+	osProvider, configuration := config.Startup()	
 
 	// Setup the Database connection
-	dbclient := influxdb2.NewClient(config.InfluxdbServer, config.Token)
+	dbclient := influxdb2.NewClient(configuration.InfluxdbServer, configuration.Token)
 	health, err := dbclient.Health(context.Background())
 	if (err != nil) && health.Status == domain.HealthCheckStatusPass {
 		log.Panic(err)
 	}
-	writeAPI := dbclient.WriteAPI(config.Org, config.Bucket)
+	writeAPI := dbclient.WriteAPI(configuration.Org, configuration.Bucket)
 	errorsCh := writeAPI.Errors()
 	// Catch any write errors
 	go func() {
@@ -354,7 +244,7 @@ func main() {
 	r := handlers.Router(dbclient)
 
 	srv := &http.Server{
-		Addr:    ":" + config.WebPort,
+		Addr:    ":" + configuration.WebPort,
 		Handler: r,
 	}
 
@@ -363,7 +253,7 @@ func main() {
 	}()
 
 	// Go into the main loop.
-	go statsWorker(config, osProvider, writeAPI)
+	go statsWorker(configuration, osProvider, writeAPI)
 
 	// Listen for Sigint or SigTerm and exit if you get them.
 	sigs := make(chan os.Signal, 1)
